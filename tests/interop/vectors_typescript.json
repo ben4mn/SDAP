@@ -1,0 +1,84 @@
+{
+  "generator": "typescript",
+  "key": {
+    "private_key_hex": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+    "public_key_hex": "d8b59a4cf2e705bbde1f6653c16d1361437b83d4768aa14231666a936b9dfa8a",
+    "key_id": "interop-test-key-1"
+  },
+  "canonicalization": {
+    "input": {
+      "name": "Alice",
+      "age": 30,
+      "active": true,
+      "scores": [
+        100,
+        95,
+        88
+      ]
+    },
+    "canonical_hex": "7b22616374697665223a747275652c22616765223a33302c226e616d65223a22416c696365222c2273636f726573223a5b3130302c39352c38385d7d",
+    "canonical_utf8": "{\"active\":true,\"age\":30,\"name\":\"Alice\",\"scores\":[100,95,88]}"
+  },
+  "sha256": {
+    "input_hex": "7b22616374697665223a747275652c22616765223a33302c226e616d65223a22416c696365222c2273636f726573223a5b3130302c39352c38385d7d",
+    "hash_hex": "2b058fc4bf1a34497da09db5d477d6eafc4d76f49c53f2848469af0e8a10d989"
+  },
+  "jws": {
+    "payload_utf8": "Hello, SDAP!",
+    "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImludGVyb3AtdGVzdC1rZXktMSJ9.SGVsbG8sIFNEQVAh.O0kRdxmbOYROo_rVHt8SiV3mJNSySMiWgwlgHKthllc7WLRm9dSugV0ZPgAqdvcE-5p7-grGWOhw4T0Rp5oyBQ"
+  },
+  "detached_jws": {
+    "payload_hex": "7b22616374697665223a747275652c22616765223a33302c226e616d65223a22416c696365222c2273636f726573223a5b3130302c39352c38385d7d",
+    "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImludGVyb3AtdGVzdC1rZXktMSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19..M4UIJU6tCG15QsXJ_7hLLsAPYKNdE-J5S77sDM8g_crMcndAFu0fGchSL7VODzAVmrtUfK_bOw8usDWO5prdBg"
+  },
+  "hkdf": {
+    "inputs": {
+      "shared_secret_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "nonce_a_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "nonce_b_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "session_id": "test-session-001"
+    },
+    "encrypt_key_hex": "2c33e52c82fd2710bd0c763b4175c501ebb2c02c0516164de481a752be505427",
+    "mac_key_hex": "e4f567a5da23fc723adae34aa8540e57b1765bedfb068f615493451eb55cfe58"
+  },
+  "attestation": {
+    "inputs": {
+      "issuer_did": "did:sdap:example.com",
+      "subject_did": "did:sdap:example.com:test-agent",
+      "agent_type": "specialist",
+      "capabilities": [
+        "read:data"
+      ],
+      "security_level": "standard",
+      "compliance_tags": [
+        "SOC2"
+      ],
+      "max_delegation_depth": 3
+    },
+    "jwt": "eyJhbGciOiJFZERTQSJ9.eyJzZGFwX2F0dGVzdGF0aW9uIjp7ImFnZW50VHlwZSI6InNwZWNpYWxpc3QiLCJjYXBhYmlsaXRpZXMiOlsicmVhZDpkYXRhIl0sInNlY3VyaXR5TGV2ZWwiOiJzdGFuZGFyZCIsImNvbXBsaWFuY2VUYWdzIjpbIlNPQzIiXSwibWF4RGVsZWdhdGlvbkRlcHRoIjozfSwiaXNzIjoiZGlkOnNkYXA6ZXhhbXBsZS5jb20iLCJzdWIiOiJkaWQ6c2RhcDpleGFtcGxlLmNvbTp0ZXN0LWFnZW50IiwiaWF0IjoxNzczNjMzOTk3LCJleHAiOjIwODg5OTM5OTd9.M_dd5T5OCXo-4PVu1l_q0lQM2vI7aEQM8HRK5_kQtEZFjqIh3jKuVVaWVF5sYbFwZ3hHdy3A64zLXFxQjBlfAQ"
+  },
+  "delegation": {
+    "inputs": {
+      "issuer_did": "did:sdap:example.com:agent-a",
+      "delegatee_did": "did:sdap:example.com:agent-b",
+      "audience_did": "did:sdap:example.com:agent-c",
+      "scopes": [
+        "data:read",
+        "audit:read"
+      ]
+    },
+    "jwt": "eyJhbGciOiJFZERTQSJ9.eyJzY29wZXMiOlsiZGF0YTpyZWFkIiwiYXVkaXQ6cmVhZCJdLCJjb25zdHJhaW50cyI6e30sImRlbGVnYXRpb25EZXB0aCI6MCwiaXNzIjoiZGlkOnNkYXA6ZXhhbXBsZS5jb206YWdlbnQtYSIsInN1YiI6ImRpZDpzZGFwOmV4YW1wbGUuY29tOmFnZW50LWIiLCJhdWQiOiJkaWQ6c2RhcDpleGFtcGxlLmNvbTphZ2VudC1jIiwiaWF0IjoxNzczNjMzOTk3LCJleHAiOjIwODg5OTM5OTcsImp0aSI6IjhjMzJmYmVkLWFkZGUtNDY4ZC1hNmQ0LTE3NWZkMmNkNzY3NSJ9.sPknVXNPWOEy0odVBPQ6a5vc5GijhZnRaGGKdnXN_yb40M0JiFCrPQwvNTy0bLjhYlVQxd0Rz4ADBUDFEe3YDw"
+  },
+  "audit_entry": {
+    "entryId": "b877fe6c-eae8-4a12-bb40-7be86520d74c",
+    "timestamp": "2026-03-16T04:06:37.051Z",
+    "actorDID": "did:sdap:example.com:auditor",
+    "eventType": "interop.test",
+    "eventData": {
+      "message": "cross-language test"
+    },
+    "entryHash": "baba673582f987db7162064b2b6c257ceb82a0501128b7fa3f1ff3493887a71d",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6ImludGVyb3AtdGVzdC1rZXktMSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19..dtBlo2m7NbmEW4Vur6JHZQPrasGFfZExjU0iRHgd2NcX2tm1iquPcRc4jGsFS3v9NxB-7tDNJ1UN7GwlRCfrDQ",
+    "keyId": "interop-test-key-1"
+  }
+}
