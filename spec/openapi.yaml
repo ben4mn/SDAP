@@ -1,0 +1,1537 @@
+openapi: "3.1.0"
+
+info:
+  title: Secure Digital Agent Protocol (SDAP) API
+  version: "1.0.0"
+  description: |
+    REST API for the Secure Digital Agent Protocol (SDAP) v1.0.
+
+    SDAP is a layered security and trust framework for AI agent-to-agent
+    communication, providing:
+    - **Layer 1 — Identity:** `did:sdap` DID resolution
+    - **Layer 2 — Handshake:** 3-message mutual authentication and session establishment
+    - **Layer 3 — Payload Security:** AES-256-GCM encrypted session envelopes
+    - **Layer 4 — Trust Delegation:** Signed delegation token issuance and revocation
+    - **Layer 5 — Audit Trail:** Tamper-evident, hash-chained audit log retrieval
+
+    All endpoints use standard HTTPS. Sensitive payloads are encrypted within
+    session envelopes using the session key derived during the handshake.
+
+    ## References
+    - Protocol Specification: `spec/sdap-protocol-v1.md`
+    - DID Method Specification: `spec/did-method-sdap.md`
+    - JSON Schemas: `spec/schemas/`
+
+  contact:
+    name: SDAP Working Group
+    url: https://sdap.dev
+
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://{providerDomain}
+    description: Provider-hosted SDAP endpoint
+    variables:
+      providerDomain:
+        default: example.com
+        description: The fully-qualified DNS domain of the SDAP provider
+
+tags:
+  - name: Identity
+    description: |
+      DID Document resolution endpoints (Layer 1). Served at the `.well-known`
+      path per the `did:sdap` method specification (`spec/did-method-sdap.md`).
+  - name: Handshake
+    description: |
+      Three-message mutual authentication and session establishment (Layer 2).
+      The single `/sdap/handshake` endpoint handles all three messages —
+      `sdap/handshake/init`, `sdap/handshake/accept`, and
+      `sdap/handshake/confirm` — distinguished by the `type` field in the
+      request body.
+  - name: Revocation
+    description: |
+      Delegation token revocation check and submission (Layer 4). Short token
+      lifetimes (1 hour default) are the primary revocation mechanism; this
+      endpoint supports explicit pre-expiry revocation.
+  - name: Audit
+    description: |
+      Audit log retrieval (Layer 5). Returns paginated lists of signed,
+      hash-chained audit entries for a specific A2A task.
+
+paths:
+  /.well-known/sdap/did/{agentId}:
+    get:
+      operationId: resolveAgentDid
+      summary: Resolve an agent DID Document
+      description: |
+        Resolves the `did:sdap` DID Document for the agent with the given
+        `agentId` under this provider domain.
+
+        This endpoint is the normative resolution target for DIDs of the form
+        `did:sdap:<provider-domain>:<agent-id>` per Section 3.1 of
+        `spec/did-method-sdap.md`.
+
+        **Resolution process:**
+        1. The client constructs the URL as
+           `https://<provider-domain>/.well-known/sdap/did/<agent-id>`.
+        2. The provider returns the DID Document if the agent exists and is active.
+        3. If the agent is deactivated, the provider returns `410 Gone` or a
+           document with `"deactivated": true`.
+
+        **Caching:** Responders SHOULD include appropriate `Cache-Control`
+        headers. Default TTL is 300 seconds (5 minutes); maximum is 86400
+        seconds (24 hours). High-security deployments (`high`/`critical`)
+        SHOULD set TTL ≤ 60 seconds.
+
+        **Security:** MUST be served over HTTPS with a valid certificate.
+        Clients MUST validate the full TLS certificate chain.
+      tags:
+        - Identity
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          description: |
+            The agent identifier portion of the `did:sdap` DID. Case-sensitive
+            and unique within the provider's namespace.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9\\-_\\.]+$"
+            example: records-agent-v2
+      responses:
+        "200":
+          description: DID Document found and returned successfully.
+          headers:
+            Cache-Control:
+              description: |
+                Cache TTL in seconds. Clients MUST respect this value and not
+                cache beyond the stated max-age.
+              schema:
+                type: string
+                example: "max-age=300"
+            Content-Type:
+              description: |
+                SHOULD be `application/did+ld+json` or `application/json`.
+              schema:
+                type: string
+                example: "application/did+ld+json"
+          content:
+            application/did+ld+json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+        "404":
+          description: |
+            Agent not found. The `agentId` does not correspond to a registered
+            agent under this provider domain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+              example:
+                type: sdap/error
+                code: HANDSHAKE_REJECTED
+                message: "DID not found: did:sdap:example.com:unknown-agent"
+                timestamp: "2026-03-15T10:30:00.000Z"
+        "410":
+          description: |
+            Agent DID has been deactivated. The DID is permanently inactive
+            and MUST NOT be used to establish new sessions. The response body
+            MAY contain the deactivated DID Document for historical reference.
+          content:
+            application/did+ld+json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+        "429":
+          description: Rate limit exceeded. Implement exponential backoff.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                description: Seconds to wait before retrying.
+        "500":
+          description: Internal provider error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+
+  /.well-known/sdap/did:
+    get:
+      operationId: resolveProviderDid
+      summary: Resolve the provider DID Document
+      description: |
+        Resolves the provider-level DID Document for the provider itself.
+        Provider DIDs have the form `did:sdap:<provider-domain>` (no `agent-id`
+        segment) and are used to verify attestation JWT signatures and
+        provider-level operations.
+
+        Resolvers fetch this endpoint to obtain the provider's public keys for
+        verifying `providerAttestation` JWTs.
+      tags:
+        - Identity
+      responses:
+        "200":
+          description: Provider DID Document returned successfully.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "max-age=300"
+          content:
+            application/did+ld+json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DidDocument"
+        "404":
+          description: Provider DID not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+
+  /.well-known/sdap/revocations/{jti}:
+    get:
+      operationId: checkRevocation
+      summary: Check delegation token revocation status
+      description: |
+        Checks whether the delegation token with the given JWT ID (`jti`) has
+        been explicitly revoked before its expiry.
+
+        Short token lifetimes (1 hour default for `standard`; 15 minutes for
+        `high`/`critical`) are the primary revocation mechanism. This endpoint
+        supports explicit pre-expiry revocation for immediate invalidation after
+        security incidents or policy changes.
+
+        Implementations at `high` or `critical` security level SHOULD check
+        this endpoint for every token in a delegation chain before accepting it.
+
+        **Rate limiting:** Implementors SHOULD apply rate limiting proportional
+        to the expected volume of delegation token usage.
+      tags:
+        - Revocation
+      parameters:
+        - name: jti
+          in: path
+          required: true
+          description: |
+            The UUID v4 JWT ID (`jti` claim) of the delegation token to check.
+          schema:
+            type: string
+            format: uuid
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      responses:
+        "200":
+          description: Revocation status returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationStatus"
+              examples:
+                notRevoked:
+                  summary: Token not revoked (valid)
+                  value:
+                    revoked: false
+                    jti: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                revoked:
+                  summary: Token has been revoked
+                  value:
+                    revoked: true
+                    jti: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                    revokedAt: "2026-03-15T09:00:00.000Z"
+                    reason: security_incident
+        "404":
+          description: |
+            Token ID not found. This may mean the token was never issued by
+            this provider, or the provider does not maintain a revocation
+            registry for this token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "429":
+          description: Rate limit exceeded.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+
+    post:
+      operationId: revokeToken
+      summary: Submit a delegation token for revocation
+      description: |
+        Explicitly revokes a delegation token before its expiry time. Only the
+        token's issuer (the delegator) or the provider that controls the issuing
+        agent MAY submit revocations.
+
+        **Authorization:** The request MUST be authenticated. Providers SHOULD
+        require a signed request using the delegator's Ed25519 authentication
+        key. The specific authentication mechanism for this admin endpoint is
+        provider-specific; a common approach is to require a signed JWT in the
+        `Authorization` header (Bearer scheme).
+
+        **Effect:** After revocation, all subsequent calls to `GET
+        /.well-known/sdap/revocations/{jti}` will return `revoked: true`.
+        In-flight sessions that presented this token SHOULD be terminated at the
+        next session renewal.
+      tags:
+        - Revocation
+      parameters:
+        - name: jti
+          in: path
+          required: true
+          description: UUID v4 JWT ID of the token to revoke.
+          schema:
+            type: string
+            format: uuid
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevocationRequest"
+            example:
+              reason: security_incident
+              revokedBy: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+              timestamp: "2026-03-15T09:00:00.000Z"
+      responses:
+        "200":
+          description: Token successfully revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationStatus"
+              example:
+                revoked: true
+                jti: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                revokedAt: "2026-03-15T09:00:00.000Z"
+                reason: security_incident
+        "400":
+          description: Invalid request (malformed `jti` or request body).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "401":
+          description: |
+            Unauthorized — the requester is not the issuer of this token or
+            does not have provider authority over the issuer's domain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "404":
+          description: Token not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "409":
+          description: Token is already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationStatus"
+
+  /sdap/handshake:
+    post:
+      operationId: handshake
+      summary: SDAP three-way handshake endpoint
+      description: |
+        Handles all three messages of the SDAP mutual authentication handshake
+        (Layer 2), distinguished by the `type` field in the request body.
+
+        **Message flow:**
+
+        ```
+        Initiator                          Responder
+            │                                  │
+            │── POST /sdap/handshake ──────────►│  type: "sdap/handshake/init"
+            │◄── 200 OK ───────────────────────│  type: "sdap/handshake/accept"
+            │                                  │
+            │── POST /sdap/handshake ──────────►│  type: "sdap/handshake/confirm"
+            │◄── 200 OK ───────────────────────│  {"status": "established", ...}
+        ```
+
+        **Message 1 — Init (`sdap/handshake/init`):**
+        - Sent by the initiating agent to begin mutual authentication.
+        - The server verifies the initiator's DID and signature, then responds
+          with an `sdap/handshake/accept` message including the session ID.
+
+        **Message 2 — Accept (`sdap/handshake/accept`):**
+        - This response is returned by the server after processing a valid Init.
+        - Contains the server's ephemeral key, nonce, granted scopes, session ID,
+          and expiry.
+
+        **Message 3 — Confirm (`sdap/handshake/confirm`):**
+        - Sent by the initiating agent to complete mutual authentication.
+        - Echoes both nonces, confirming receipt of the Accept.
+        - Optionally includes delegation tokens for pre-authorization.
+        - The server responds with a session established confirmation.
+
+        **Key derivation occurs locally on both sides** after the Accept is
+        processed by the initiator and after the Confirm is received by the
+        responder. No key material is transmitted after the Init/Accept
+        ephemeral key exchange.
+
+        See `spec/sdap-protocol-v1.md` Section 5 for the full handshake
+        specification and `spec/schemas/` for message schemas.
+      tags:
+        - Handshake
+      requestBody:
+        required: true
+        description: |
+          One of the three SDAP handshake messages. The `type` field
+          discriminates between them:
+          - `"sdap/handshake/init"` — Message 1, sent by initiator
+          - `"sdap/handshake/confirm"` — Message 3, sent by initiator
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/HandshakeInit"
+                - $ref: "#/components/schemas/HandshakeConfirm"
+              discriminator:
+                propertyName: type
+                mapping:
+                  "sdap/handshake/init": "#/components/schemas/HandshakeInit"
+                  "sdap/handshake/confirm": "#/components/schemas/HandshakeConfirm"
+            examples:
+              initMessage:
+                summary: HandshakeInit (Message 1)
+                value:
+                  type: "sdap/handshake/init"
+                  version: "1.0"
+                  initiatorDID: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+                  targetDID: "did:sdap:acme-health.com:records-agent-v2"
+                  nonce: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+                  timestamp: "2026-03-15T10:30:00.000Z"
+                  ephemeralKey:
+                    kty: "OKP"
+                    crv: "X25519"
+                    x: "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+                  requestedScopes:
+                    - "medical-records:read:summary-only"
+                    - "audit:read"
+                  requiredSecurityLevel: "standard"
+                  signature: "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpzZGFwOm9yY2hlc3RyYXRvci1jb3JwLmNvbTpwbGFubmluZy1hZ2VudC12MSNhdXRoLWtleS0xIn0..SIG"
+              confirmMessage:
+                summary: HandshakeConfirm (Message 3)
+                value:
+                  type: "sdap/handshake/confirm"
+                  sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                  initiatorDID: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+                  initiatorNonce: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+                  responderNonce: "cmFuZG9tIG5vbmNlIGJ5dGVzIGhlcmUgeHh4"
+                  timestamp: "2026-03-15T10:30:01.850Z"
+                  sessionConfirmed: true
+                  signature: "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpzZGFwOm9yY2hlc3RyYXRvci1jb3JwLmNvbTpwbGFubmluZy1hZ2VudC12MSNhdXRoLWtleS0xIn0..CONFIRM_SIG"
+      responses:
+        "200":
+          description: |
+            Handshake message processed successfully.
+
+            - For an `sdap/handshake/init`: Returns a `sdap/handshake/accept`
+              response containing the session ID, responder's ephemeral key,
+              granted scopes, and session expiry.
+            - For an `sdap/handshake/confirm`: Returns a session established
+              confirmation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/HandshakeAccept"
+                  - $ref: "#/components/schemas/HandshakeEstablished"
+              discriminator:
+                propertyName: type
+                mapping:
+                  "sdap/handshake/accept": "#/components/schemas/HandshakeAccept"
+                  "sdap/handshake/established": "#/components/schemas/HandshakeEstablished"
+              examples:
+                acceptResponse:
+                  summary: HandshakeAccept (response to init)
+                  value:
+                    type: "sdap/handshake/accept"
+                    sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                    responderDID: "did:sdap:acme-health.com:records-agent-v2"
+                    initiatorDID: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+                    nonce: "cmFuZG9tIG5vbmNlIGJ5dGVzIGhlcmUgeHh4"
+                    initiatorNonce: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+                    timestamp: "2026-03-15T10:30:01.250Z"
+                    ephemeralKey:
+                      kty: "OKP"
+                      crv: "X25519"
+                      x: "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
+                    grantedScopes:
+                      - "medical-records:read:summary-only"
+                    sessionExpiry: "2026-03-15T11:30:01.250Z"
+                    negotiatedSecurityLevel: "standard"
+                    supportedLayers: [1, 2, 3, 4, 5]
+                    signature: "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpzZGFwOmFjbWUtaGVhbHRoLmNvbTpyZWNvcmRzLWFnZW50LXYyI2F1dGgta2V5LTEifQ..ACCEPT_SIG"
+                establishedResponse:
+                  summary: HandshakeEstablished (response to confirm)
+                  value:
+                    type: "sdap/handshake/established"
+                    sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                    status: "established"
+                    timestamp: "2026-03-15T10:30:02.100Z"
+        "400":
+          description: |
+            Malformed request — missing required fields, invalid JSON, or
+            unrecognized `type` value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+              example:
+                type: sdap/error
+                code: HANDSHAKE_REJECTED
+                message: "Malformed handshake message: missing required field 'nonce'"
+                timestamp: "2026-03-15T10:30:00.500Z"
+        "401":
+          description: |
+            Handshake rejected. Reasons include DID resolution failure,
+            invalid signature, security level too low, missing attestation,
+            nonce replay, or timestamp out of range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+              examples:
+                didResolutionFailed:
+                  summary: Initiator DID could not be resolved
+                  value:
+                    type: sdap/error
+                    code: HANDSHAKE_REJECTED
+                    message: "Handshake rejected: initiator DID could not be resolved"
+                    details:
+                      reason: did_resolution_failed
+                      initiatorDID: "did:sdap:unknown-provider.example:agent-1"
+                    timestamp: "2026-03-15T10:30:01.000Z"
+                securityLevelTooLow:
+                  summary: Requested security level insufficient
+                  value:
+                    type: sdap/error
+                    code: HANDSHAKE_REJECTED
+                    message: "Handshake rejected: requiredSecurityLevel 'basic' is below this agent's minimum 'standard'"
+                    details:
+                      reason: security_level_insufficient
+                      requiredMinSecurityLevel: standard
+                    timestamp: "2026-03-15T10:30:01.000Z"
+        "403":
+          description: |
+            Provider attestation invalid or delegation tokens failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "409":
+          description: |
+            Conflict — a confirm was received for a session ID that does not
+            exist or has already been established.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "429":
+          description: |
+            Rate limit exceeded — too many handshake attempts.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+
+  /sdap/audit/{taskId}:
+    get:
+      operationId: getAuditLog
+      summary: Retrieve audit log entries for a task
+      description: |
+        Returns a paginated list of signed, hash-chained audit entries associated
+        with the given A2A `taskId`.
+
+        Audit entries are returned in chronological order (ascending timestamp).
+        The response includes the complete chain metadata needed for integrity
+        verification.
+
+        **Access control:** Providers MUST authenticate callers before returning
+        audit entries. Agents MAY only retrieve audit entries for tasks they
+        participated in, unless they hold an `audit:read` scope in a valid
+        delegation chain. Providers SHOULD authenticate using the caller's SDAP
+        session or a signed Bearer token.
+
+        **Integrity verification:** Callers SHOULD verify the audit chain
+        integrity by:
+        1. Recomputing each entry's `entryHash` from its canonical form.
+        2. Verifying each entry's `previousHash` equals the prior entry's
+           `entryHash`.
+        3. Verifying each entry's `signature` using the `actorDID`'s public key.
+
+        See `spec/sdap-protocol-v1.md` Section 8 for the full audit trail
+        specification.
+      tags:
+        - Audit
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          description: The A2A task ID whose audit entries are to be retrieved.
+          schema:
+            type: string
+            example: task-abc123
+        - name: sessionId
+          in: query
+          required: false
+          description: |
+            Filter entries to those associated with a specific SDAP session UUID.
+          schema:
+            type: string
+            format: uuid
+            example: 550e8400-e29b-41d4-a716-446655440000
+        - name: actorDID
+          in: query
+          required: false
+          description: |
+            Filter entries by the DID of the agent that generated them.
+          schema:
+            type: string
+            pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+            example: "did:sdap:acme-health.com:records-agent-v2"
+        - name: eventType
+          in: query
+          required: false
+          description: |
+            Filter entries to a specific event type.
+          schema:
+            type: string
+            enum:
+              - session.initiated
+              - session.established
+              - session.closed
+              - task.created
+              - task.updated
+              - task.completed
+              - task.failed
+              - payload.encrypted
+              - payload.decrypted
+              - delegation.created
+              - delegation.used
+              - delegation.revoked
+              - key.rotated
+              - policy.violation
+            example: task.completed
+        - name: since
+          in: query
+          required: false
+          description: |
+            Return only entries with a `timestamp` at or after this ISO 8601
+            UTC datetime.
+          schema:
+            type: string
+            format: date-time
+            example: "2026-03-15T10:00:00.000Z"
+        - name: until
+          in: query
+          required: false
+          description: |
+            Return only entries with a `timestamp` before or at this ISO 8601
+            UTC datetime.
+          schema:
+            type: string
+            format: date-time
+            example: "2026-03-15T11:00:00.000Z"
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Maximum number of entries to return per page. Defaults to 50;
+            maximum is 500.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+            example: 50
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque pagination cursor returned by a previous response in the
+            `nextCursor` field. Pass this value to retrieve the next page of
+            results.
+          schema:
+            type: string
+            example: "eyJlbnRyeUlkIjoiN2M5ZTY2NzkifQ"
+      security:
+        - BearerAuth: []
+        - SdapSession: []
+      responses:
+        "200":
+          description: Audit entries returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogResponse"
+              example:
+                taskId: task-abc123
+                entries:
+                  - entryId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    taskId: task-abc123
+                    sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                    timestamp: "2026-03-15T10:30:02.123Z"
+                    actorDID: "did:sdap:acme-health.com:records-agent-v2"
+                    eventType: task.created
+                    eventData:
+                      taskId: task-abc123
+                      sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                    previousHash: null
+                    entryHash: "3f4e5d6c7b8a9f0e1d2c3b4a5e6f7d8c9b0a1e2d3c4b5a6f7e8d9c0b1a2f3e4"
+                    signature: "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpzZGFwOmFjbWUtaGVhbHRoLmNvbTpyZWNvcmRzLWFnZW50LXYyI2F1dGgta2V5LTEifQ..SIG"
+                totalCount: 1
+                nextCursor: null
+                chainValid: true
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "401":
+          description: |
+            Unauthorized — missing or invalid authentication credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "403":
+          description: |
+            Forbidden — the authenticated agent does not have permission to
+            read audit entries for this task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+        "404":
+          description: |
+            Task not found, or no audit entries exist for this task ID at this
+            provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdapError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A compact JWT signed with the caller's Ed25519 authentication key.
+        The JWT `iss` claim MUST be the caller's `did:sdap` DID. The JWT `aud`
+        claim MUST be the provider's DID. The JWT `exp` claim MUST be in the
+        future (maximum 5 minutes from `iat`).
+
+    SdapSession:
+      type: apiKey
+      in: header
+      name: X-SDAP-Session-ID
+      description: |
+        The SDAP session ID from a previously established handshake. When
+        present, the provider validates that the request is part of an active
+        SDAP session and that the session's granted scopes include `audit:read`.
+
+  schemas:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Identity Schemas
+    # ─────────────────────────────────────────────────────────────────────────
+
+    X25519PublicKeyJwk:
+      type: object
+      description: |
+        An X25519 public key in JSON Web Key format (RFC 7517 + RFC 8037).
+      required:
+        - kty
+        - crv
+        - x
+      properties:
+        kty:
+          type: string
+          const: "OKP"
+          description: Key type. MUST be 'OKP' for Octet Key Pair (X25519/Ed25519).
+        crv:
+          type: string
+          const: "X25519"
+          description: Curve name. MUST be 'X25519' for key agreement keys.
+        x:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: |
+            Base64url-encoded X25519 public key bytes (32 bytes = 43 chars).
+          example: "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+        kid:
+          type: string
+          description: Optional key identifier.
+        use:
+          type: string
+          enum:
+            - enc
+          description: Intended use. SHOULD be 'enc' for key agreement keys.
+      additionalProperties: false
+
+    VerificationMethod:
+      type: object
+      description: A cryptographic verification method (public key) in a DID Document.
+      required:
+        - id
+        - type
+        - controller
+        - publicKeyMultibase
+      properties:
+        id:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+#[A-Za-z0-9\\-_\\.]+$"
+          description: DID URL identifying this verification method.
+          example: "did:sdap:acme-health.com:records-agent-v2#auth-key-1"
+        type:
+          type: string
+          enum:
+            - Ed25519VerificationKey2020
+            - X25519KeyAgreementKey2020
+          description: |
+            Verification method type. `Ed25519VerificationKey2020` for
+            authentication; `X25519KeyAgreementKey2020` for key agreement.
+        controller:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}(:[A-Za-z0-9\\-_\\.]+)?$"
+          description: DID that controls (owns) this key.
+        publicKeyMultibase:
+          type: string
+          pattern: "^z[1-9A-HJ-NP-Za-km-z]+$"
+          description: |
+            Public key in Multibase format. The 'z' prefix indicates base58btc.
+          example: "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        revoked:
+          type: string
+          format: date-time
+          description: |
+            If present, this key has been revoked at the given timestamp.
+            Revoked keys are retained for a grace period (≥ 24 hours) to
+            allow in-flight session verification to complete.
+      additionalProperties: false
+
+    ServiceEndpoint:
+      type: object
+      description: A service endpoint in a DID Document.
+      required:
+        - id
+        - type
+        - serviceEndpoint
+      properties:
+        id:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+#[A-Za-z0-9\\-_\\.]+$"
+          description: DID URL identifying this service.
+        type:
+          type: string
+          enum:
+            - A2AAgentEndpoint
+            - SDAPHandshakeEndpoint
+            - SDAPAuditEndpoint
+            - SDAPCapabilityEndpoint
+          description: |
+            Service type. `A2AAgentEndpoint` for A2A tasks;
+            `SDAPHandshakeEndpoint` for SDAP handshake.
+        serviceEndpoint:
+          type: string
+          format: uri
+          pattern: "^https://"
+          description: HTTPS URL of the service endpoint.
+          example: "https://acme-health.com/agents/records-v2/sdap/handshake"
+      additionalProperties: false
+
+    DidDocument:
+      type: object
+      description: |
+        A `did:sdap` DID Document per the W3C DID Core 1.0 specification,
+        extended with SDAP-specific properties.
+
+        Full schema: `spec/schemas/did-document.json`
+      required:
+        - "@context"
+        - id
+        - controller
+        - verificationMethod
+        - authentication
+        - keyAgreement
+        - service
+        - created
+        - updated
+      properties:
+        "@context":
+          type: array
+          items:
+            type: string
+            format: uri
+          minItems: 1
+          description: |
+            JSON-LD contexts. MUST include
+            `https://www.w3.org/ns/did/v1` and
+            `https://sdap.dev/contexts/v1`.
+          example:
+            - "https://www.w3.org/ns/did/v1"
+            - "https://w3id.org/security/suites/ed25519-2020/v1"
+            - "https://w3id.org/security/suites/x25519-2020/v1"
+            - "https://sdap.dev/contexts/v1"
+        id:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}(:[A-Za-z0-9\\-_\\.]+)?$"
+          description: The DID this document describes.
+          example: "did:sdap:acme-health.com:records-agent-v2"
+        controller:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}(:[A-Za-z0-9\\-_\\.]+)?$"
+          description: DID of the controlling entity (typically the provider DID).
+          example: "did:sdap:acme-health.com"
+        verificationMethod:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/VerificationMethod"
+          description: |
+            Public keys associated with this agent. MUST include at least one
+            `Ed25519VerificationKey2020` and one `X25519KeyAgreementKey2020`.
+        authentication:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: References to Ed25519 authentication keys.
+          example:
+            - "did:sdap:acme-health.com:records-agent-v2#auth-key-1"
+        keyAgreement:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: References to X25519 key agreement keys.
+          example:
+            - "did:sdap:acme-health.com:records-agent-v2#key-agreement-1"
+        service:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/ServiceEndpoint"
+          description: |
+            Service endpoints. MUST include `A2AAgentEndpoint` and
+            `SDAPHandshakeEndpoint`.
+        providerAttestation:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact JWT issued by the provider attesting to this agent's
+            security posture and compliance certifications. Signed with the
+            provider's Ed25519 key. Optional but RECOMMENDED.
+          example: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJkaWQ6c2RhcDphY21lLWhlYWx0aC5jb20ifQ.SIG"
+        created:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of DID Document creation.
+          example: "2026-01-15T09:00:00Z"
+        updated:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of last modification.
+          example: "2026-02-20T14:30:00Z"
+        deactivated:
+          type: boolean
+          default: false
+          description: |
+            If `true`, this DID has been deactivated. MUST NOT be used to
+            establish new sessions.
+        "sdap:agentType":
+          type: string
+          enum:
+            - orchestrator
+            - specialist
+            - tool
+            - gateway
+            - compliance
+            - audit
+          description: Semantic type of this agent.
+          example: specialist
+        "sdap:fleetId":
+          type: string
+          description: Fleet identifier for fleet-DID deployments.
+        "sdap:instanceId":
+          type: string
+          description: Instance identifier within a fleet or per-instance deployment.
+        "sdap:supportedLayers":
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 5
+          uniqueItems: true
+          description: SDAP layers (1–5) supported by this agent.
+          example: [1, 2, 3, 4, 5]
+        "sdap:minSecurityLevel":
+          type: string
+          enum:
+            - basic
+            - standard
+            - high
+            - critical
+          description: |
+            Minimum security level required for sessions with this agent.
+          example: standard
+      additionalProperties: true
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Handshake Schemas
+    # ─────────────────────────────────────────────────────────────────────────
+
+    HandshakeInit:
+      type: object
+      description: |
+        The first message of the SDAP three-way handshake (Layer 2). Sent by
+        the initiating agent to begin mutual authentication.
+
+        Full schema: `spec/schemas/handshake-init.json`
+      required:
+        - type
+        - version
+        - initiatorDID
+        - targetDID
+        - nonce
+        - timestamp
+        - ephemeralKey
+        - requestedScopes
+        - requiredSecurityLevel
+        - signature
+      properties:
+        type:
+          type: string
+          const: "sdap/handshake/init"
+        version:
+          type: string
+          pattern: "^\\d+\\.\\d+$"
+          example: "1.0"
+        initiatorDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          example: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+        targetDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          example: "did:sdap:acme-health.com:records-agent-v2"
+        nonce:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: |
+            32-byte CSPRNG nonce, base64url-encoded without padding (43 chars).
+          example: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+        timestamp:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 UTC timestamp. Receivers MUST reject if outside ±60s.
+          example: "2026-03-15T10:30:00.000Z"
+        ephemeralKey:
+          $ref: "#/components/schemas/X25519PublicKeyJwk"
+        requestedScopes:
+          type: array
+          items:
+            type: string
+            pattern: "^[a-z][a-z0-9\\-]*(:[a-z][a-z0-9\\-]*(:[a-z][a-z0-9\\-]*)?)?$"
+          minItems: 0
+          maxItems: 100
+          uniqueItems: true
+          example:
+            - "medical-records:read:summary-only"
+            - "audit:read"
+        requiredSecurityLevel:
+          type: string
+          enum:
+            - basic
+            - standard
+            - high
+            - critical
+          example: standard
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact JWS (detached payload) over the JCS-canonicalized message
+            body (excluding the `signature` field). Signed with the initiator's
+            Ed25519 authentication key.
+      additionalProperties: false
+
+    HandshakeAccept:
+      type: object
+      description: |
+        The second message of the SDAP three-way handshake (Layer 2). Returned
+        by the responder after verifying a valid HandshakeInit.
+
+        Full schema: `spec/schemas/handshake-accept.json`
+      required:
+        - type
+        - sessionId
+        - responderDID
+        - initiatorDID
+        - nonce
+        - initiatorNonce
+        - timestamp
+        - ephemeralKey
+        - grantedScopes
+        - sessionExpiry
+        - signature
+      properties:
+        type:
+          type: string
+          const: "sdap/handshake/accept"
+        sessionId:
+          type: string
+          format: uuid
+          description: UUID v4 session identifier assigned by the responder.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        responderDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          example: "did:sdap:acme-health.com:records-agent-v2"
+        initiatorDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          example: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+        nonce:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Fresh 32-byte nonce generated by the responder.
+          example: "cmFuZG9tIG5vbmNlIGJ5dGVzIGhlcmUgeHh4"
+        initiatorNonce:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Echoed from the HandshakeInit `nonce` field.
+          example: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-03-15T10:30:01.250Z"
+        ephemeralKey:
+          $ref: "#/components/schemas/X25519PublicKeyJwk"
+        grantedScopes:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+          description: |
+            Subset of `requestedScopes` from HandshakeInit that the responder
+            grants. An empty array means no scopes are granted.
+          example:
+            - "medical-records:read:summary-only"
+        sessionExpiry:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 UTC timestamp when the session expires. A new handshake
+            is required after this time.
+          example: "2026-03-15T11:30:01.250Z"
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact JWS over JCS-canonicalized message body (excluding
+            `signature`), signed with the responder's Ed25519 key.
+        supportedLayers:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 5
+          uniqueItems: true
+          example: [1, 2, 3, 4, 5]
+        negotiatedSecurityLevel:
+          type: string
+          enum:
+            - basic
+            - standard
+            - high
+            - critical
+          example: standard
+      additionalProperties: false
+
+    HandshakeConfirm:
+      type: object
+      description: |
+        The third and final message of the SDAP three-way handshake (Layer 2).
+        Sent by the initiator to complete mutual authentication.
+
+        Full schema: `spec/schemas/handshake-confirm.json`
+      required:
+        - type
+        - sessionId
+        - initiatorDID
+        - initiatorNonce
+        - responderNonce
+        - timestamp
+        - sessionConfirmed
+        - signature
+      properties:
+        type:
+          type: string
+          const: "sdap/handshake/confirm"
+        sessionId:
+          type: string
+          format: uuid
+          description: Echoed from HandshakeAccept.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        initiatorDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          example: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+        initiatorNonce:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Initiator's original nonce from HandshakeInit.
+          example: "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBv"
+        responderNonce:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Responder's nonce from HandshakeAccept, echoed back.
+          example: "cmFuZG9tIG5vbmNlIGJ5dGVzIGhlcmUgeHh4"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-03-15T10:30:01.850Z"
+        sessionConfirmed:
+          type: boolean
+          const: true
+          description: MUST be true in a valid confirm message.
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact JWS over JCS-canonicalized message body (excluding
+            `signature`), signed with the initiator's Ed25519 key.
+        delegationTokens:
+          type: array
+          items:
+            type: string
+            pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+          maxItems: 10
+          description: |
+            Optional delegation token JWTs presented at session establishment
+            time. Each token is a compact JWT. Validated by the responder per
+            Section 7.3 of the protocol specification.
+      additionalProperties: false
+
+    HandshakeEstablished:
+      type: object
+      description: |
+        Confirmation response returned after a successful HandshakeConfirm,
+        indicating the session is fully established.
+      required:
+        - type
+        - sessionId
+        - status
+        - timestamp
+      properties:
+        type:
+          type: string
+          const: "sdap/handshake/established"
+        sessionId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        status:
+          type: string
+          const: "established"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-03-15T10:30:02.100Z"
+      additionalProperties: false
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Revocation Schemas
+    # ─────────────────────────────────────────────────────────────────────────
+
+    RevocationStatus:
+      type: object
+      description: The revocation status of a delegation token.
+      required:
+        - revoked
+        - jti
+      properties:
+        revoked:
+          type: boolean
+          description: Whether the token has been explicitly revoked.
+          example: false
+        jti:
+          type: string
+          format: uuid
+          description: The JWT ID being queried.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        revokedAt:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 UTC timestamp when the token was revoked.
+            Present only when `revoked` is `true`.
+          example: "2026-03-15T09:00:00.000Z"
+        reason:
+          type: string
+          enum:
+            - security_incident
+            - policy_change
+            - explicit_revocation
+            - provider_deactivated
+          description: |
+            Reason for revocation. Present only when `revoked` is `true`.
+          example: security_incident
+      additionalProperties: false
+
+    RevocationRequest:
+      type: object
+      description: Request body for explicit token revocation.
+      required:
+        - reason
+        - revokedBy
+        - timestamp
+      properties:
+        reason:
+          type: string
+          enum:
+            - security_incident
+            - policy_change
+            - explicit_revocation
+            - provider_deactivated
+          description: Reason for revoking this token.
+          example: security_incident
+        revokedBy:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}(:[A-Za-z0-9\\-_\\.]+)?$"
+          description: |
+            DID of the agent or provider submitting the revocation. MUST be
+            the token's issuer (`iss`) or the controlling provider.
+          example: "did:sdap:orchestrator-corp.com:planning-agent-v1"
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp of the revocation request.
+          example: "2026-03-15T09:00:00.000Z"
+      additionalProperties: false
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Audit Schemas
+    # ─────────────────────────────────────────────────────────────────────────
+
+    AuditEntry:
+      type: object
+      description: |
+        A single signed, hash-chained audit entry (Layer 5).
+
+        Full schema: `spec/schemas/audit-entry.json`
+      required:
+        - entryId
+        - timestamp
+        - actorDID
+        - eventType
+        - eventData
+        - previousHash
+        - entryHash
+        - signature
+      properties:
+        entryId:
+          type: string
+          format: uuid
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        taskId:
+          type: string
+          description: A2A task ID associated with this event.
+          example: task-abc123
+        sessionId:
+          type: string
+          format: uuid
+          description: SDAP session UUID.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        timestamp:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 UTC timestamp. MUST be monotonically non-decreasing within
+            a single agent's audit chain.
+          example: "2026-03-15T10:30:02.123Z"
+        actorDID:
+          type: string
+          pattern: "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$"
+          description: DID of the agent that generated this audit entry.
+          example: "did:sdap:acme-health.com:records-agent-v2"
+        eventType:
+          type: string
+          enum:
+            - session.initiated
+            - session.established
+            - session.closed
+            - task.created
+            - task.updated
+            - task.completed
+            - task.failed
+            - payload.encrypted
+            - payload.decrypted
+            - delegation.created
+            - delegation.used
+            - delegation.revoked
+            - key.rotated
+            - policy.violation
+          description: SDAP event type determining the `eventData` structure.
+          example: task.completed
+        eventData:
+          type: object
+          description: |
+            Structured event data. Schema varies by `eventType`.
+            MUST NOT contain plaintext PII, PHI, or sensitive content.
+        previousHash:
+          description: |
+            SHA-256 hash of the previous audit entry (lowercase hex). `null`
+            for the genesis (first) entry in a log.
+          oneOf:
+            - type: string
+              pattern: "^[a-f0-9]{64}$"
+            - type: "null"
+          example: null
+        entryHash:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+          description: |
+            SHA-256 hash of this entry's canonical form (JCS serialization
+            without `entryHash` and `signature` fields). Lowercase hex.
+          example: "3f4e5d6c7b8a9f0e1d2c3b4a5e6f7d8c9b0a1e2d3c4b5a6f7e8d9c0b1a2f3e4"
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact JWS over JCS-canonicalized entry (excluding `signature`),
+            signed with the `actorDID`'s Ed25519 authentication key.
+      additionalProperties: false
+
+    AuditLogResponse:
+      type: object
+      description: Paginated audit log response.
+      required:
+        - taskId
+        - entries
+        - totalCount
+      properties:
+        taskId:
+          type: string
+          description: The A2A task ID these entries belong to.
+          example: task-abc123
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+          description: |
+            Audit entries in chronological order (ascending timestamp).
+        totalCount:
+          type: integer
+          minimum: 0
+          description: Total number of audit entries matching the query filters.
+          example: 12
+        nextCursor:
+          description: |
+            Opaque cursor for retrieving the next page. `null` if this is the
+            last page.
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        chainValid:
+          type: boolean
+          description: |
+            Whether the server verified the hash chain integrity for the
+            returned entries. `true` means the chain was intact at query time.
+            May be `null` if the server does not perform chain verification.
+          example: true
+      additionalProperties: false
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Error Schema
+    # ─────────────────────────────────────────────────────────────────────────
+
+    SdapError:
+      type: object
+      description: |
+        SDAP protocol error response. Returned for all error conditions.
+        MUST NOT contain sensitive data (keys, tokens, PII, PHI).
+
+        Full schema: `spec/schemas/error.json`
+      required:
+        - type
+        - code
+        - message
+        - timestamp
+      properties:
+        type:
+          type: string
+          const: "sdap/error"
+        code:
+          type: string
+          enum:
+            - HANDSHAKE_REJECTED
+            - ATTESTATION_INVALID
+            - DELEGATION_INVALID
+            - SCOPE_EXCEEDED
+            - SEQUENCE_VIOLATION
+            - SESSION_EXPIRED
+            - ENCRYPTION_REQUIRED
+            - AUDIT_CHAIN_BROKEN
+          description: |
+            Machine-readable error code.
+            - `HANDSHAKE_REJECTED` — Target refused the handshake.
+            - `ATTESTATION_INVALID` — Provider attestation malformed or expired.
+            - `DELEGATION_INVALID` — Delegation token failed chain validation.
+            - `SCOPE_EXCEEDED` — Operation not covered by granted scopes.
+            - `SEQUENCE_VIOLATION` — Envelope sequence number out of order.
+            - `SESSION_EXPIRED` — Session TTL elapsed; new handshake required.
+            - `ENCRYPTION_REQUIRED` — Plaintext received where JWE expected.
+            - `AUDIT_CHAIN_BROKEN` — Audit hash chain integrity failure.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: |
+            Human-readable error description for logging. MUST NOT contain
+            sensitive data.
+          example: "Handshake rejected: initiator DID could not be resolved"
+        sessionId:
+          type: string
+          format: uuid
+          description: |
+            SDAP session ID, if the error occurred within an established
+            session. Omitted for pre-session errors.
+        details:
+          type: object
+          description: |
+            Optional non-sensitive diagnostic details. Schema varies by
+            error code. MUST NOT include private keys, token payloads, or
+            sensitive user data.
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp when this error was generated.
+          example: "2026-03-15T10:30:01.500Z"
+      additionalProperties: false
