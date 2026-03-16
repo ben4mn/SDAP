@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdap.dev/schemas/v1/error.json",
+  "title": "SDAP Error",
+  "description": "An SDAP error message returned when a protocol operation fails. Error messages are returned unencrypted (outside a session envelope) since they may be generated before a session is established or when a session is being terminated. Implementations MUST NOT include sensitive data in error messages; use the 'details' field for non-sensitive diagnostic information only.",
+  "type": "object",
+  "required": [
+    "type",
+    "code",
+    "message",
+    "timestamp"
+  ],
+  "properties": {
+    "type": {
+      "description": "Message type discriminator. MUST be exactly 'sdap/error'.",
+      "type": "string",
+      "const": "sdap/error"
+    },
+    "code": {
+      "description": "Machine-readable error code. Implementations SHOULD handle each code specifically: HANDSHAKE_REJECTED — the target refused the handshake (identity verification failed, security level too low, etc.); ATTESTATION_INVALID — a providerAttestation was malformed, expired, or had an invalid signature; DELEGATION_INVALID — a delegation token was malformed, expired, revoked, or had an invalid signature; SCOPE_EXCEEDED — the requested operation is not covered by the session's granted scopes or delegation tokens; SEQUENCE_VIOLATION — an envelope arrived with an unexpected sequence number (duplicate, gap, or out of order); SESSION_EXPIRED — the session TTL has elapsed and a new handshake is required; ENCRYPTION_REQUIRED — an unencrypted or improperly encrypted message was received where a JWE was expected; AUDIT_CHAIN_BROKEN — the audit entry chain hash is inconsistent, indicating possible log tampering.",
+      "type": "string",
+      "enum": [
+        "HANDSHAKE_REJECTED",
+        "ATTESTATION_INVALID",
+        "DELEGATION_INVALID",
+        "SCOPE_EXCEEDED",
+        "SEQUENCE_VIOLATION",
+        "SESSION_EXPIRED",
+        "ENCRYPTION_REQUIRED",
+        "AUDIT_CHAIN_BROKEN"
+      ]
+    },
+    "message": {
+      "description": "Human-readable error description suitable for logging and debugging. MUST NOT contain sensitive data (keys, tokens, PII, PHI, or user-specific information). Should be specific enough for developers to diagnose the issue.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "examples": [
+        "Handshake rejected: initiator DID could not be resolved",
+        "Session expired: session TTL of 3600s elapsed, please re-initiate handshake",
+        "Scope exceeded: operation requires 'medical-records:write' but session only grants 'medical-records:read:summary-only'",
+        "Sequence violation: expected sequence number 5, received 7"
+      ]
+    },
+    "sessionId": {
+      "description": "UUID of the SDAP session this error is associated with. OPTIONAL — may be omitted if the error occurs before a session is established (e.g., during handshake). When present, allows the receiver to correlate the error with a specific session.",
+      "type": "string",
+      "format": "uuid",
+      "examples": ["550e8400-e29b-41d4-a716-446655440000"]
+    },
+    "details": {
+      "description": "Optional structured object providing additional non-sensitive diagnostic information. The schema varies by error code. MUST NOT include private keys, token payloads, plaintext user data, or any information that could aid an attacker in exploiting the error condition.",
+      "type": "object",
+      "oneOf": [
+        {"$ref": "#/$defs/handshakeRejectedDetails"},
+        {"$ref": "#/$defs/attestationInvalidDetails"},
+        {"$ref": "#/$defs/delegationInvalidDetails"},
+        {"$ref": "#/$defs/scopeExceededDetails"},
+        {"$ref": "#/$defs/sequenceViolationDetails"},
+        {"$ref": "#/$defs/sessionExpiredDetails"},
+        {"$ref": "#/$defs/encryptionRequiredDetails"},
+        {"$ref": "#/$defs/auditChainBrokenDetails"},
+        {"$ref": "#/$defs/genericDetails"}
+      ]
+    },
+    "timestamp": {
+      "description": "ISO 8601 UTC timestamp when this error was generated.",
+      "type": "string",
+      "format": "date-time",
+      "examples": ["2026-03-15T10:30:01.500Z"]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "handshakeRejectedDetails": {
+      "description": "Details for HANDSHAKE_REJECTED errors.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "did_resolution_failed",
+            "signature_invalid",
+            "security_level_insufficient",
+            "attestation_required",
+            "target_did_mismatch",
+            "nonce_invalid",
+            "timestamp_out_of_range",
+            "unsupported_version"
+          ]
+        },
+        "initiatorDID": {"type": "string"},
+        "requiredMinSecurityLevel": {
+          "type": "string",
+          "enum": ["basic", "standard", "high", "critical"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "attestationInvalidDetails": {
+      "description": "Details for ATTESTATION_INVALID errors.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "signature_invalid",
+            "expired",
+            "issuer_did_resolution_failed",
+            "subject_mismatch",
+            "missing_required_compliance_tags"
+          ]
+        },
+        "missingComplianceTags": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "attestationExpiry": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "delegationInvalidDetails": {
+      "description": "Details for DELEGATION_INVALID errors.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "signature_invalid",
+            "expired",
+            "not_yet_valid",
+            "revoked",
+            "issuer_did_resolution_failed",
+            "scope_attenuation_violated",
+            "chain_hash_mismatch",
+            "depth_limit_exceeded",
+            "audience_mismatch",
+            "geofence_violated",
+            "compliance_tag_missing"
+          ]
+        },
+        "tokenId": {
+          "description": "jti of the invalid token (for logging — do not expose to untrusted parties).",
+          "type": "string",
+          "format": "uuid"
+        },
+        "delegationDepth": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "scopeExceededDetails": {
+      "description": "Details for SCOPE_EXCEEDED errors.",
+      "type": "object",
+      "properties": {
+        "requestedScope": {
+          "description": "The scope that was requested but not granted.",
+          "type": "string"
+        },
+        "grantedScopes": {
+          "description": "The scopes that are actually granted in this session.",
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "sequenceViolationDetails": {
+      "description": "Details for SEQUENCE_VIOLATION errors.",
+      "type": "object",
+      "properties": {
+        "expectedSequenceNumber": {
+          "description": "The sequence number the receiver expected.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "receivedSequenceNumber": {
+          "description": "The sequence number that was actually received.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "violationType": {
+          "type": "string",
+          "enum": ["duplicate", "gap", "out_of_order"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "sessionExpiredDetails": {
+      "description": "Details for SESSION_EXPIRED errors.",
+      "type": "object",
+      "properties": {
+        "expiredAt": {
+          "description": "The ISO 8601 timestamp when the session expired.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "encryptionRequiredDetails": {
+      "description": "Details for ENCRYPTION_REQUIRED errors.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "plaintext_payload_received",
+            "jwe_malformed",
+            "wrong_recipient_key",
+            "algorithm_not_supported"
+          ]
+        },
+        "requiredAlgorithm": {
+          "description": "The JWE algorithm that is required (e.g., 'ECDH-ES+A256KW').",
+          "type": "string"
+        },
+        "requiredEncryption": {
+          "description": "The JWE encryption that is required (e.g., 'A256GCM').",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "auditChainBrokenDetails": {
+      "description": "Details for AUDIT_CHAIN_BROKEN errors.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "hash_mismatch",
+            "missing_entries",
+            "sequence_gap",
+            "signature_invalid"
+          ]
+        },
+        "lastValidEntryId": {
+          "description": "UUID of the last audit entry that was successfully verified before the chain break was detected.",
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "genericDetails": {
+      "description": "Fallback for error details not covered by a specific type.",
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {"type": "string"},
+          {"type": "number"},
+          {"type": "boolean"},
+          {"type": "null"}
+        ]
+      }
+    }
+  }
+}

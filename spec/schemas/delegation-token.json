@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdap.dev/schemas/v1/delegation-token.json",
+  "title": "SDAP Delegation Token Payload",
+  "description": "The JWT payload for an SDAP delegation token (Layer 4). Delegation tokens are signed JWTs that authorize an agent (the delegatee) to perform specific scoped operations on behalf of the delegator. They form verifiable delegation chains where scope can only be narrowed (attenuated), never expanded, as authority travels down the chain. This schema describes the decoded payload; the full token is a compact JWT (header.payload.signature).",
+  "type": "object",
+  "required": [
+    "iss",
+    "sub",
+    "aud",
+    "iat",
+    "exp",
+    "jti",
+    "scopes",
+    "constraints",
+    "parentTokenId",
+    "delegationDepth"
+  ],
+  "properties": {
+    "iss": {
+      "description": "Issuer — the DID of the agent delegating authority (the delegator). The token's signature MUST be verifiable using the Ed25519 authentication key from the issuer's DID Document.",
+      "type": "string",
+      "pattern": "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$",
+      "examples": ["did:sdap:orchestrator-corp.com:planning-agent-v1"]
+    },
+    "sub": {
+      "description": "Subject — the DID of the agent receiving delegated authority (the delegatee). This agent is the only one permitted to present this token.",
+      "type": "string",
+      "pattern": "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$",
+      "examples": ["did:sdap:acme-health.com:records-agent-v2"]
+    },
+    "aud": {
+      "description": "Audience — the DID of the target service or agent that should accept this token, or '*' to indicate the token may be presented to any agent. For security, '*' SHOULD only be used in 'basic' security level contexts. The target agent MUST verify its own DID appears in (or matches) this field.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}(:[A-Za-z0-9\\-_\\.]+)?$",
+          "description": "A specific agent or provider DID"
+        },
+        {
+          "type": "string",
+          "const": "*",
+          "description": "Wildcard audience — token may be presented to any agent"
+        }
+      ],
+      "examples": ["did:sdap:acme-health.com:records-agent-v2", "*"]
+    },
+    "iat": {
+      "description": "Issued At — Unix epoch seconds at which this token was issued. MUST be in the past relative to the current time.",
+      "type": "integer",
+      "minimum": 0,
+      "examples": [1742032200]
+    },
+    "exp": {
+      "description": "Expiration — Unix epoch seconds after which this token MUST be rejected. Agents MUST validate expiration before accepting a token. Recommended maximum lifetime: 3600 seconds (1 hour) for standard; 900 seconds (15 minutes) for high/critical.",
+      "type": "integer",
+      "minimum": 1,
+      "examples": [1742035800]
+    },
+    "nbf": {
+      "description": "Not Before — Unix epoch seconds before which this token MUST NOT be accepted. Optional. Use for tokens that should only become valid at a future time (e.g., scheduled tasks).",
+      "type": "integer",
+      "minimum": 0,
+      "examples": [1742032200]
+    },
+    "jti": {
+      "description": "JWT ID — a UUID v4 uniquely identifying this token. Used for revocation checks and as the parentTokenId for tokens that sub-delegate from this one. MUST be globally unique.",
+      "type": "string",
+      "format": "uuid",
+      "examples": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]
+    },
+    "scopes": {
+      "description": "Array of scope strings delegated by this token. Each scope follows the pattern '<category>:<resource>:<constraint>' for namespaced scopes, or a core SDAP scope name. MUST be a subset of the scopes held by the issuer at the time of issuance (scope attenuation principle — scope can only narrow down a chain, never expand). Validators MUST verify this against the issuer's parent token.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z][a-zA-Z0-9\\-]*(:[a-zA-Z][a-zA-Z0-9\\-]*(:[a-zA-Z][a-zA-Z0-9\\-]*)?)?$",
+        "examples": [
+          "medical-records:read:summary-only",
+          "read:medical_records",
+          "transact:payment",
+          "delegate:tasks",
+          "audit:read",
+          "acme-health:read:imaging_data"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 50,
+      "uniqueItems": true
+    },
+    "constraints": {
+      "description": "Additional constraints on how the delegated scopes may be used. All constraints MUST be satisfied before the token is accepted as valid for an operation. Constraints narrow authority but never expand it — a constraint cannot grant access to something not covered by the scopes array.",
+      "type": "object",
+      "properties": {
+        "maxSubDelegations": {
+          "description": "Maximum number of times this token's scopes may be further delegated (sub-delegated) to other agents. 0 means the delegatee cannot sub-delegate these scopes at all. MUST be less than or equal to the parent token's maxSubDelegations minus 1 (if parent had this constraint). Equivalent to the maximum remaining delegation chain depth from this point.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "examples": [2]
+        },
+        "allowedProviders": {
+          "description": "If present, this token may only be used in sessions with agents from the listed provider domains. Any operation presented to an agent not in this list MUST be rejected.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "A provider domain (e.g., 'acme-health.com')",
+            "pattern": "^[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}$"
+          },
+          "uniqueItems": true,
+          "examples": [["acme-health.com", "city-hospital.org"]]
+        },
+        "deniedProviders": {
+          "description": "Provider domains explicitly excluded from using this token. Takes precedence over allowedProviders. An agent from a denied provider MUST reject any operation backed by this token.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}$"
+          },
+          "uniqueItems": true
+        },
+        "requiredSecurityLevel": {
+          "description": "The minimum session security level required for operations under this token. Agents MUST reject token usage in sessions below this level.",
+          "type": "string",
+          "enum": ["basic", "standard", "high", "critical"]
+        },
+        "requiredComplianceTags": {
+          "description": "Compliance certifications the target agent MUST hold (as attested in its providerAttestation) for this token to be accepted. E.g., requiring 'HIPAA' for medical data access.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "examples": ["HIPAA", "SOC2", "ISO27001", "PCI-DSS", "FedRAMP"]
+          },
+          "uniqueItems": true,
+          "examples": [["HIPAA"]]
+        },
+        "geofence": {
+          "description": "Geographic constraints on where this token may be used. The target agent must hold a valid attestation asserting operation within one of the allowed regions. This is an attestation-based constraint — the protocol cannot technically enforce geolocation.",
+          "type": "object",
+          "properties": {
+            "allowedRegions": {
+              "description": "ISO 3166-1 alpha-2 country codes or regional identifiers where this token may be used. E.g., ['US', 'CA'] for North America.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Z]{2}(-[A-Z0-9]{1,3})?$"
+              },
+              "minItems": 1,
+              "uniqueItems": true,
+              "examples": [["US", "EU"]]
+            }
+          },
+          "required": ["allowedRegions"],
+          "additionalProperties": false
+        },
+        "dataClassification": {
+          "description": "The data classification levels this token permits access to. Agents MUST only grant access to data at or below the highest listed classification level.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["public", "internal", "confidential", "PHI", "PII", "restricted"]
+          },
+          "uniqueItems": true,
+          "examples": [["PHI", "PII"]]
+        }
+      },
+      "additionalProperties": false
+    },
+    "parentTokenId": {
+      "description": "The jti (JWT ID) of the parent delegation token from which this token's authority derives. MUST be null for root tokens (tokens issued directly by the user or a trust anchor with no SDAP parent). For all other tokens, this MUST reference a valid, non-expired token whose sub matches this token's iss.",
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "description": "UUID of the parent token"
+        },
+        {
+          "type": "null",
+          "description": "Null for root tokens with no SDAP parent"
+        }
+      ],
+      "examples": ["f9e8d7c6-b5a4-3210-fedc-ba9876543210", null]
+    },
+    "delegationDepth": {
+      "description": "The depth of this token in the delegation chain. 0 for root tokens (issued by a trust anchor or user); incremented by 1 for each delegation step. Validators MUST verify this is consistent with the parent token chain. The sum of delegationDepth and maxSubDelegations SHOULD be bounded to prevent unbounded chains (recommended maximum total chain length: 5).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "examples": [0, 1, 2]
+    },
+    "delegationChainHash": {
+      "description": "SHA-256 hash of the parent token chain, encoded as a lowercase hex string. For root tokens (parentTokenId is null), this MUST be null. For delegation tokens, this is computed as SHA-256(parentToken.delegationChainHash || parentToken.jti) — a running hash that allows validators to detect chain tampering without retrieving every ancestor token. Validators with access to the full chain can verify this hash.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex-encoded SHA-256 hash"
+        },
+        {
+          "type": "null",
+          "description": "Null for root tokens"
+        }
+      ],
+      "examples": ["a3f5b2c1d4e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2", null]
+    }
+  },
+  "additionalProperties": false
+}

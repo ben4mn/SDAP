@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdap.dev/schemas/v1/session-envelope.json",
+  "title": "SDAP Session Envelope",
+  "description": "The wrapper for all encrypted SDAP messages exchanged within an established session (Layer 3). After a successful handshake, both agents encrypt their payloads using the derived session key (AES-256-GCM) and transmit them inside this envelope. The envelope itself is not encrypted — only the 'payload' field (a JWE compact token) contains encrypted content. Sequence numbers prevent replay attacks and detect dropped messages. The auditEntryHash links each message to the audit trail.",
+  "type": "object",
+  "required": [
+    "type",
+    "version",
+    "sessionId",
+    "sequenceNumber",
+    "timestamp",
+    "senderDID",
+    "dataClassification",
+    "payload",
+    "auditEntryHash"
+  ],
+  "properties": {
+    "type": {
+      "description": "Message type discriminator. MUST be exactly 'sdap/envelope'.",
+      "type": "string",
+      "const": "sdap/envelope"
+    },
+    "version": {
+      "description": "SDAP protocol version. MUST be '1.0' for this version of the specification.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "examples": ["1.0"]
+    },
+    "sessionId": {
+      "description": "UUID of the established SDAP session this envelope belongs to. MUST match the sessionId from the handshake-accept message. Receivers MUST reject envelopes with an unrecognized sessionId.",
+      "type": "string",
+      "format": "uuid",
+      "examples": ["550e8400-e29b-41d4-a716-446655440000"]
+    },
+    "sequenceNumber": {
+      "description": "A monotonically increasing integer starting at 1 for the first message in a session. Each subsequent message MUST have a sequenceNumber exactly 1 greater than the previous message from the same sender. Receivers MUST reject messages with duplicate, out-of-order, or skipped sequence numbers and generate a policy.violation audit entry with violationType 'sequence_violation'. A gap indicates a dropped or withheld message.",
+      "type": "integer",
+      "minimum": 1,
+      "examples": [1, 2, 42]
+    },
+    "timestamp": {
+      "description": "ISO 8601 UTC timestamp when this envelope was created. MUST be after the session establishment timestamp. Receivers MUST reject envelopes with timestamps more than 300 seconds in the past or future.",
+      "type": "string",
+      "format": "date-time",
+      "examples": ["2026-03-15T10:30:05.750Z"]
+    },
+    "senderDID": {
+      "description": "DID of the agent sending this envelope. MUST be either the initiatorDID or responderDID from the session handshake.",
+      "type": "string",
+      "pattern": "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$",
+      "examples": ["did:sdap:orchestrator-corp.com:planning-agent-v1"]
+    },
+    "dataClassification": {
+      "description": "The data classification of the plaintext content inside the encrypted payload. Declared in the clear so that receivers can apply data handling policies before decryption. The receiver SHOULD verify that the classification is consistent with the delegation token scopes for this session. 'PHI' = Protected Health Information; 'PII' = Personally Identifiable Information.",
+      "type": "string",
+      "enum": ["public", "internal", "confidential", "PHI", "PII", "restricted"],
+      "examples": ["PHI"]
+    },
+    "payload": {
+      "description": "The encrypted message content as a JWE compact serialization (RFC 7516). The plaintext (JWE payload) is the actual SDAP message or data being exchanged. The JWE MUST use: alg=ECDH-ES+A256KW (ephemeral key agreement wrapping), enc=A256GCM (AES-256-GCM content encryption). The session key derived during the handshake is used as the recipient key for the key agreement. The JWE includes an integrity-protected AAD field containing the sessionId, sequenceNumber, and senderDID to bind the ciphertext to the envelope metadata.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$",
+      "description": "JWE compact serialization: header.encrypted_key.iv.ciphertext.tag (5 parts separated by '.')",
+      "examples": ["eyJhbGciOiJFQ0RILUVTK0EyNTZLVyIsImVuYyI6IkEyNTZHQ00ifQ.KkRVYUlkVEdhcFJBT0dQa2ZfRk9oZw.96nSkyxpOaEynbdg.T7wOLYCVJphtS7KAL-HJnwfRGY.vfhMPpSRLsS_OEVq3aM5Ow"]
+    },
+    "auditEntryHash": {
+      "description": "The entryHash of the most recent audit entry in the sender's audit log at the time this envelope was created. Links the encrypted message to a specific point in the audit chain, allowing verifiers to confirm that the audit trail was intact when this message was sent. A gap or mismatch between expected and actual audit chain hashes at the receiving agent is a sign of audit log tampering.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "examples": ["3f4e5d6c7b8a9f0e1d2c3b4a5e6f7d8c9b0a1e2d3c4b5a6f7e8d9c0b1a2f3e4"]
+    }
+  },
+  "additionalProperties": false
+}

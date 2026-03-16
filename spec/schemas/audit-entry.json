@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdap.dev/schemas/v1/audit-entry.json",
+  "title": "SDAP Audit Entry",
+  "description": "A single entry in the SDAP audit trail (Layer 5). Audit entries form a Merkle-like chain where each entry contains the hash of the previous entry, making the log tamper-evident: altering any past entry invalidates all subsequent entries. Entries are signed by the agent that generated them. The audit trail records all significant SDAP events — session lifecycle, task operations, payload handling, delegation usage, key rotation, and policy violations.",
+  "type": "object",
+  "required": [
+    "entryId",
+    "timestamp",
+    "actorDID",
+    "eventType",
+    "eventData",
+    "previousHash",
+    "entryHash",
+    "signature"
+  ],
+  "properties": {
+    "entryId": {
+      "description": "UUID v4 uniquely identifying this audit entry. MUST be globally unique within the audit log.",
+      "type": "string",
+      "format": "uuid",
+      "examples": ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+    },
+    "taskId": {
+      "description": "Optional identifier of the task this event is associated with (e.g., an A2A task ID). Used to correlate audit entries across agents and providers for a single task.",
+      "type": "string",
+      "examples": ["task-abc123"]
+    },
+    "sessionId": {
+      "description": "Optional UUID of the SDAP session during which this event occurred. Correlates entries to the session established by the handshake.",
+      "type": "string",
+      "format": "uuid",
+      "examples": ["550e8400-e29b-41d4-a716-446655440000"]
+    },
+    "timestamp": {
+      "description": "ISO 8601 UTC timestamp when this event occurred. MUST be monotonically increasing within a single agent's audit chain (each new entry's timestamp MUST NOT be earlier than the previous entry's timestamp).",
+      "type": "string",
+      "format": "date-time",
+      "examples": ["2026-03-15T10:30:02.123Z"]
+    },
+    "actorDID": {
+      "description": "The DID of the agent that generated this audit entry (typically the agent performing or observing the action). This is the agent whose Ed25519 key is used to sign the entry.",
+      "type": "string",
+      "pattern": "^did:sdap:[a-z0-9][a-z0-9\\-\\.]*\\.[a-z]{2,}:[A-Za-z0-9\\-_\\.]+$",
+      "examples": ["did:sdap:acme-health.com:records-agent-v2"]
+    },
+    "eventType": {
+      "description": "The type of SDAP event being recorded. Determines the expected structure of the eventData field.",
+      "type": "string",
+      "enum": [
+        "session.initiated",
+        "session.established",
+        "session.closed",
+        "task.created",
+        "task.updated",
+        "task.completed",
+        "task.failed",
+        "payload.encrypted",
+        "payload.decrypted",
+        "delegation.created",
+        "delegation.used",
+        "delegation.revoked",
+        "key.rotated",
+        "policy.violation"
+      ]
+    },
+    "eventData": {
+      "description": "Structured data about the event. Schema varies by eventType. MUST NOT contain plaintext sensitive data (PII, PHI, financial data) — record identifiers, hashes, and metadata only. The content is intentionally flexible to accommodate the range of event types.",
+      "type": "object",
+      "oneOf": [
+        {"$ref": "#/$defs/sessionInitiatedData"},
+        {"$ref": "#/$defs/sessionEstablishedData"},
+        {"$ref": "#/$defs/sessionClosedData"},
+        {"$ref": "#/$defs/taskEventData"},
+        {"$ref": "#/$defs/payloadEventData"},
+        {"$ref": "#/$defs/delegationCreatedData"},
+        {"$ref": "#/$defs/delegationUsedData"},
+        {"$ref": "#/$defs/delegationRevokedData"},
+        {"$ref": "#/$defs/keyRotatedData"},
+        {"$ref": "#/$defs/policyViolationData"}
+      ]
+    },
+    "previousHash": {
+      "description": "SHA-256 hash of the previous audit entry in this agent's log, encoded as a lowercase hex string. MUST be null for the very first entry in a log (genesis entry). All subsequent entries MUST include the hash of the immediately preceding entry. Verifiers confirm chain integrity by recomputing and comparing this hash.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex-encoded SHA-256 hash of the previous entry"
+        },
+        {
+          "type": "null",
+          "description": "Null for the genesis (first) entry in a log"
+        }
+      ],
+      "examples": ["b94d27b9934d3e08a52e52d7da7dabfac484efe04294e576db6f4f6e7f4d7b91", null]
+    },
+    "entryHash": {
+      "description": "SHA-256 hash of this entry's canonical form, encoded as a lowercase hex string. Computed by: (1) remove the 'entryHash' and 'signature' fields from the entry object, (2) serialize using JCS (RFC 8785), (3) compute SHA-256. This hash becomes the 'previousHash' of the next entry. Verifiers recompute this hash to confirm integrity.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "examples": ["3f4e5d6c7b8a9f0e1d2c3b4a5e6f7d8c9b0a1e2d3c4b5a6f7e8d9c0b1a2f3e4"]
+    },
+    "signature": {
+      "description": "A compact JWS signature over the JCS-canonicalized entry (the same canonical form used for entryHash computation, i.e., the entry without the 'signature' field), using the actorDID's Ed25519 authentication key. The JWS header 'kid' MUST reference the specific key used. Verifiers resolve the actorDID to confirm this signature.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sessionInitiatedData": {
+      "description": "Data for session.initiated events — when an agent sends a handshake-init message.",
+      "type": "object",
+      "required": ["initiatorDID", "targetDID", "requiredSecurityLevel"],
+      "properties": {
+        "initiatorDID": {"type": "string"},
+        "targetDID": {"type": "string"},
+        "requiredSecurityLevel": {"type": "string", "enum": ["basic", "standard", "high", "critical"]},
+        "requestedScopes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "sessionEstablishedData": {
+      "description": "Data for session.established events — when the three-way handshake completes successfully.",
+      "type": "object",
+      "required": ["sessionId", "initiatorDID", "responderDID", "negotiatedSecurityLevel"],
+      "properties": {
+        "sessionId": {"type": "string", "format": "uuid"},
+        "initiatorDID": {"type": "string"},
+        "responderDID": {"type": "string"},
+        "negotiatedSecurityLevel": {"type": "string", "enum": ["basic", "standard", "high", "critical"]},
+        "grantedScopes": {"type": "array", "items": {"type": "string"}},
+        "sessionExpiry": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "sessionClosedData": {
+      "description": "Data for session.closed events — when a session terminates (normally or abnormally).",
+      "type": "object",
+      "required": ["sessionId", "reason"],
+      "properties": {
+        "sessionId": {"type": "string", "format": "uuid"},
+        "reason": {
+          "type": "string",
+          "enum": ["normal", "expired", "error", "revoked", "inactivity", "policy_violation"]
+        },
+        "finalSequenceNumber": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "taskEventData": {
+      "description": "Data for task.created, task.updated, task.completed, and task.failed events.",
+      "type": "object",
+      "required": ["taskId"],
+      "properties": {
+        "taskId": {"type": "string"},
+        "sessionId": {"type": "string", "format": "uuid"},
+        "taskType": {"type": "string"},
+        "delegationTokenId": {
+          "description": "jti of the delegation token authorizing this task, if applicable.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "failureReason": {
+          "description": "For task.failed events, a brief non-sensitive description of the failure.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payloadEventData": {
+      "description": "Data for payload.encrypted and payload.decrypted events.",
+      "type": "object",
+      "required": ["sessionId", "sequenceNumber", "dataClassification"],
+      "properties": {
+        "sessionId": {"type": "string", "format": "uuid"},
+        "sequenceNumber": {"type": "integer", "minimum": 0},
+        "dataClassification": {
+          "type": "string",
+          "enum": ["public", "internal", "confidential", "PHI", "PII", "restricted"]
+        },
+        "payloadSizeBytes": {
+          "description": "Size of the plaintext payload in bytes. Record for operational monitoring without exposing content.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "contentHash": {
+          "description": "SHA-256 hash of the plaintext payload for integrity verification. Allows future verification that the decrypted content matches what was encrypted.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "delegationCreatedData": {
+      "description": "Data for delegation.created events — when an agent issues a new delegation token.",
+      "type": "object",
+      "required": ["tokenId", "delegateDID", "scopes", "delegationDepth"],
+      "properties": {
+        "tokenId": {"type": "string", "format": "uuid"},
+        "delegateDID": {"type": "string"},
+        "scopes": {"type": "array", "items": {"type": "string"}},
+        "delegationDepth": {"type": "integer", "minimum": 0},
+        "parentTokenId": {
+          "oneOf": [{"type": "string", "format": "uuid"}, {"type": "null"}]
+        },
+        "expiry": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "delegationUsedData": {
+      "description": "Data for delegation.used events — when an agent presents a delegation token to authorize an operation.",
+      "type": "object",
+      "required": ["tokenId", "operationScope", "sessionId"],
+      "properties": {
+        "tokenId": {"type": "string", "format": "uuid"},
+        "operationScope": {
+          "description": "The specific scope being exercised in this operation.",
+          "type": "string"
+        },
+        "sessionId": {"type": "string", "format": "uuid"},
+        "taskId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "delegationRevokedData": {
+      "description": "Data for delegation.revoked events — when a token is explicitly revoked before its expiry.",
+      "type": "object",
+      "required": ["tokenId", "reason"],
+      "properties": {
+        "tokenId": {"type": "string", "format": "uuid"},
+        "reason": {
+          "type": "string",
+          "enum": ["security_incident", "policy_change", "explicit_revocation", "provider_deactivated"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "keyRotatedData": {
+      "description": "Data for key.rotated events — when an agent's keys are rotated in the DID Document.",
+      "type": "object",
+      "required": ["retiredKeyId", "newKeyId", "keyType"],
+      "properties": {
+        "retiredKeyId": {
+          "description": "DID URL of the key being retired.",
+          "type": "string"
+        },
+        "newKeyId": {
+          "description": "DID URL of the newly added key.",
+          "type": "string"
+        },
+        "keyType": {
+          "type": "string",
+          "enum": ["Ed25519VerificationKey2020", "X25519KeyAgreementKey2020"]
+        },
+        "reason": {
+          "type": "string",
+          "enum": ["scheduled", "compromise_suspected", "compromise_confirmed", "policy_requirement"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "policyViolationData": {
+      "description": "Data for policy.violation events — when an SDAP policy check fails (e.g., scope exceeded, security level insufficient, geofence constraint violated).",
+      "type": "object",
+      "required": ["violationType", "description"],
+      "properties": {
+        "violationType": {
+          "type": "string",
+          "enum": [
+            "scope_exceeded",
+            "security_level_insufficient",
+            "attestation_missing",
+            "attestation_expired",
+            "geofence_violated",
+            "compliance_tag_missing",
+            "token_expired",
+            "token_invalid",
+            "delegation_depth_exceeded",
+            "sequence_violation",
+            "replay_detected"
+          ]
+        },
+        "description": {
+          "description": "Human-readable description of the violation. MUST NOT include sensitive data.",
+          "type": "string",
+          "maxLength": 500
+        },
+        "offendingDID": {
+          "description": "DID of the agent that triggered the policy violation, if identifiable.",
+          "type": "string"
+        },
+        "sessionId": {"type": "string", "format": "uuid"},
+        "tokenId": {"type": "string", "format": "uuid"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
